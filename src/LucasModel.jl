@@ -222,12 +222,13 @@ end
 
 function solveθbyw̃!(θ̃mat, Vamat, param)
     @unpack_LucasParameters param
-    Vafunc = partialinterpolate(agrid[1:end-1], Vamat, Constant())
+    Vafunc = partialinterpolate(agrid, Vamat, Linear())
     for iter in CartesianIndices(θ̃mat)
         ia, iψ = iter[1], iter[2]
         w̃ = agrid[ia]
         θ̃mat[iter] = find_zero(x->θfoc(x, w̃, iψ, (Vafunc = Vafunc, ), param), (0.1, 3.0), Roots.A42(), tol = 1e-2)
     end
+    θ̃mat
 end
 
 

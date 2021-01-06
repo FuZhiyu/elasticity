@@ -30,10 +30,10 @@ Varealfunc(w, ψ) = w^-γ
 
 
 θfocerror_real = [θfoc(1.0, x, 1, (Vafunc = Varealfunc, ), p) for x in agrid]
-@test norm(θfocerror) < 1e-10
+@test norm(θfocerror_real) < 1e-10
 
 θfocerror_approx = [θfoc(1.0, x, 1, (Vafunc = Vaapproxfunc, ), p) for x in agrid]
-@test norm(θfocerror) < 1e-10
+@test norm(θfocerror_approx) < 1e-10
 
 θsol_real = [find_zero(x->θfoc(x, a, 1, (Vafunc = Varealfunc, ), p), 0.5) for a in agrid]
 @test norm(θsol_real .- 1) < 1e-10
@@ -41,6 +41,7 @@ Varealfunc(w, ψ) = w^-γ
 θsol_approx = [find_zero(x->θfoc(x, a, 1, (Vafunc = Vaapproxfunc, ), p), 0.5) for a in agrid]
 @test norm(θsol_approx .- 1) < 1e-10
 
-
+solveθbyw̃!(hh.θmat, Vamat, p)
+@test norm(hh.θmat .- 1) < 1e-10
 
 end
