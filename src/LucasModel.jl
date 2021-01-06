@@ -1,4 +1,4 @@
-module LUcasModel
+module LucasModel
 
 include("utils.jl")
 @with_kw struct LucasParameters
@@ -16,16 +16,16 @@ include("utils.jl")
     ψgrid::Vector{Float64} = [0.01:0.01:0.99;] # D/Y
     na::Int64 = length(agrid)
     nψ::Int64 = length(ψgrid)
-    # 𝔼εy::IterableExpectation{Array{Float64, 1}, Array{Float64, 1}} = expectation(Normal(), Gaussian; n = 10)
-    𝔼εx::IterableExpectation{Array{Float64, 1}, Array{Float64, 1}} = expectation(Normal(), Gaussian; n = 10)
+    𝔼εy::IterableExpectation{Array{Float64, 1}, Array{Float64, 1}} = expectation(Normal(), Gaussian; n = 10)
+    # 𝔼εx::IterableExpectation{Array{Float64, 1}, Array{Float64, 1}} = expectation(Normal(), Gaussian; n = 10)
     Rfvec::Vector{Float64} = zeros(nψ)
     pdvec::Vector{Float64} = zeros(nψ)
     Aψ::Matrix{Float64}  = zeros(nψ, nψ)
 end
 
-function ψ_markov(param)
+function ψ_markov!(param)
     @unpack_LucasParameters param
-    A = zeros(nψ, nψ)
+    # Aψ = zeros(nψ, nψ)
     if nψ > 1
         ψgridmid = (ψgrid[1:end-1] + ψgrid[2:end]) / 2
     else
@@ -36,12 +36,12 @@ function ψ_markov(param)
     𝔼εx = expectation(Normal(), Gaussian; n = 1000)
     for i in 1:nψ
         for j in 1:nψ
-            A[i, j] = 𝔼εx(x-> ψgridmid[j] < ψ′func(ψgrid[i], x, param) <= ψgridmid[j+1])
+            Aψ[i, j] = 𝔼εx(x-> ψgridmid[j] < ψ′func(ψgrid[i], x, param) <= ψgridmid[j+1])
         end
     end
-    A[A.<1e-8] .= 0
-    A .= A ./ sum(A, dims = 2)
-    return A
+    Aψ[Aψ.<1e-8] .= 0
+    Aψ .= Aψ ./ sum(Aψ, dims = 2)
+    return Aψ
 end
 
 
@@ -108,8 +108,8 @@ end
 function solveR!(param)
     @unpack_LucasParameters param
     rhs =  exp((γ-1) * g - γ * (γ-1)/2 * σY^2)
-    pdconst = 1/(rhs / p.β - 1)
-    res = nlsolve(x->eulerequation(x, p), pdconst * ones(size(p.ψgrid)), iterations = 20, method = :newton, show_trace = true)
+    pdconst = 1/(rhs / param.β - 1)
+    res = nlsolve(x->eulerequation(x, param), pdconst * ones(size(param.ψgrid)), iterations = 20, method = :newton, show_trace = true)
     pdvec .= res.zero
     calculateRf!(param)
 end

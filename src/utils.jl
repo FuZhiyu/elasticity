@@ -20,3 +20,19 @@ end
 function (f::PartialInterpolation)(x, y)
     return f.itpvec[y](x)
 end
+
+function centraldiff(V, agrid)
+    Va = similar(V)
+    dagrid = diff(agrid)
+    na = length(agrid)
+    for i in 1:na
+        i₋ = max(1, i-1) # when i == 1, it becomes forward difference
+        i₊ = min(na, i+1) # when i == na, it becomes backward difference
+        Δa = agrid[i₊] - agrid[i₋]
+        for j in 1:size(V)[2]
+            ΔV = V[i₊, j] - V[i₋, j]
+            Va[i, j] = ΔV / Δa
+        end               
+    end
+    return Va
+end
