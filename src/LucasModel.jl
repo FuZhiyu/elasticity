@@ -1,3 +1,4 @@
+
 module LucasModel
 
 include("utils.jl")
@@ -51,14 +52,17 @@ end
     Vmat::Matrix{T} # value function
     V′mat::Matrix{T} # value function
     θmat::Matrix{T} # portfolio allocation
+    θ̃mat::Matrix{T} # portfolio allocation by w̃
     cmat::Matrix{T} # consumption
+    wmat::Matrix{T} # used for endogenous points
+    w̃mat::Matrix{T} # used for endogenous points
     # θ̃mat::Matrix{T} # store temporary value
 end
 
 function LucasHouseholds(param, T = Float64; initializeV = true)
     @unpack_LucasParameters param
-    Vmat, V′mat, θmat, cmat = [Matrix{T}(undef, na, nψ) for i in 1:length(fieldnames(LucasHouseholds))]
-    hh = LucasHouseholds(Vmat, V′mat, θmat, cmat)
+    mats =  [Matrix{T}(undef, na, nψ) for i in 1:length(fieldnames(LucasHouseholds))]
+    hh = LucasHouseholds(mats...)
     # if initializeV
     #     initializeV!(hh, param)
     # end
@@ -153,21 +157,29 @@ function V′εyεx(w, ψ, c, θ, εy, ψ′, funcs, param)
 end
 
 # solving foc for θ
-
-@fastmath function θfocεyεx(θ, w̃, iψ, εy, iψ′, funcs, param)
-    @unpack_LucasParameters param
-    ψ, ψ′ = ψgrid[iψ], ψgrid[iψ′]
-    @unpack Vafunc = funcs
+@inline @fastmath function Ygrowthεy(εy, param)
+    @unpack g, σY = param
     Ygrowth = exp(g - 1/2 * σY^2 + σY * εy)
+end
+
+@inline @fastmath function Rfunc(iψ, iψ′, Ygrowth, param)
+    @unpack pdvec, ψgrid = param
+    ψ, ψ′ = ψgrid[iψ], ψgrid[iψ′]
     R = (pdvec[iψ′] + 1) / pdvec[iψ] * ψ′ / ψ * Ygrowth
+end
+
+@inline @fastmath function θfocεyεx(θ, w̃, iψ, εy, iψ′, funcs, param)
+    @unpack_LucasParameters param
+    @unpack Vafunc = funcs
+    Ygrowth = Ygrowthεy(εy, param)
+    R = Rfunc(iψ, iψ′, Ygrowth, param)
     Rf = Rfvec[iψ]
     w′ = w̃ * (θ * R + (1-θ) * Rf) / Ygrowth
     Va = Vafunc(w′, iψ′)
-    # @show R, Ygrowth, Rf, w′, Va
     return Va * Ygrowth^-γ  *  (R - Rf) * w̃^γ
 end
 
-function θfocεx(θ, w̃, iψ, iψ′, funcs, param)
+@inline function θfocεx(θ, w̃, iψ, iψ′, funcs, param)
     return param.𝔼εy(εy->θfocεyεx(θ, w̃, iψ, εy, iψ′, funcs, param))
 end
 
@@ -182,13 +194,68 @@ function θfoc(θ, w̃, iψ, funcs, param)
     return res
 end
 
+function cfocrhs(θ, w̃, iψ, εy, iψ′, funcs, param)
+    @unpack Vafunc = funcs
+    @unpack_LucasParameters param
+    Ygrowth = Ygrowthεy(εy, param)
+    R = Rfunc(iψ, iψ′, Ygrowth, param)
+    Rf = Rfvec[iψ]
+    w′ = w̃ * (θ * R + (1-θ) * Rf) / Ygrowth
+    Va = Vafunc(w′, iψ′)
+    return β * Va * Ygrowth^-γ  *  R
+end
+
+function 𝔼cfocrhs(θ, w̃, iψ, funcs, param)
+    𝔼rhs = zero(θ)
+    @unpack nψ, 𝔼εy = param
+    @inbounds for iψ′ in 1:nψ
+        if Aψ[iψ,iψ′] > zero(eltype(Aψ))
+            𝔼εycfocrhs = 𝔼εy(εy->(cfocrhs(θ, w̃, iψ, εy, iψ′, funcs, param)))
+            𝔼rhs += Aψ[iψ,iψ′] * 𝔼εycfocrhs
+        end
+    end
+    return 𝔼rhs
+end
+
+function solvewbyw̃!(wmat, θ̃mat, Vafunc, param)
+    @unpack_LucasParameters param
+    # Vafunc = partialinterpolate(agrid, Vamat, Linear())    
+    for iter in CartesianIndices(θ̃mat)
+        ia, iψ = iter[1], iter[2]
+        w̃, ψ = agrid[ia], ψgrid[iψ]
+        θ̃ = θ̃mat[iter]
+        𝔼rhs = 𝔼cfocrhs(θ̃, w̃, iψ, (Vafunc = Vafunc, ), param)
+        c = 𝔼rhs^(-1/γ)
+        w = w̃ + c + ψ - 1
+        wmat[iter] = w
+    end
+    return wmat
+end
+
+function interpolatepolicy!(cmat, θmat, w̃mat, wmat, θ̃mat, param)
+    @unpack_LucasParameters param
+    θ̃func = partialinterpolate(agrid, θ̃mat)
+    for iψ in 1:nψ
+        ψ = ψgrid[iψ]
+        w_w̃ = @view wmat[:, iψ] # this gives a mapping from w̃grid -> w
+        c_w = @view cmat[:, iψ]
+        θ_w = @view θmat[:, iψ]
+        @assert issorted(w_w̃)
+        # if this mapping is monotone, we could take the inverse of this mapping:
+        w̃_w = @view w̃mat[:, iψ] # relabel for notational clarity
+        ŵgrid, w̃_ŵ = w_w̃, agrid # relabel it for notational clarity. The mapping ŵgrid, w̃_ŵ gives the policy function
+        sorted_interpolation!(w̃_w, ŵgrid, w̃_ŵ, agrid) 
+        θ_w .= θ̃func.(w̃_w, iψ)
+        @. c_w =  agrid + 1 - ψ - w̃_w
+    end
+end
 
 # solving maximization for θ
 @fastmath function θobjεyεx(θ, w̃, iψ, εy, iψ′, funcs, param)
     @unpack_LucasParameters param
     ψ, ψ′ = ψgrid[iψ], ψgrid[iψ′]
     @unpack V′func = funcs
-    Ygrowth = exp(g - 1/2 * σY^2 + εy)
+    Ygrowth = Ygrowthεy(εy, param)
     R = (pdvec[iψ′] + 1) / pdvec[iψ] * ψ′ / ψ * Ygrowth
     Rf = Rfvec[iψ]
     w′ = w̃ * (θ * R + (1-θ) * Rf) / Ygrowth
@@ -220,47 +287,27 @@ function EV′(w, ψ, c, θ, funcs, param)
 end
 
 
-function solveθbyw̃!(θ̃mat, Vamat, param)
+function solveθbyw̃!(θ̃mat, Vafunc, param)
     @unpack_LucasParameters param
-    Vafunc = partialinterpolate(agrid, Vamat, Linear())
+    # Vafunc = partialinterpolate(agrid, Vamat, Linear())
     for iter in CartesianIndices(θ̃mat)
         ia, iψ = iter[1], iter[2]
         w̃ = agrid[ia]
-        θ̃mat[iter] = find_zero(x->θfoc(x, w̃, iψ, (Vafunc = Vafunc, ), param), (0.1, 3.0), Roots.A42(), tol = 1e-2)
+            θ̃mat[iter] = find_zero(x->θfoc(x, w̃, iψ, (Vafunc = Vafunc, ), param), (0.1, 3.0), Roots.A42(), tol = 1e-2)
     end
     θ̃mat
 end
 
-
-# @btime EV′(1.0, 0.4, 0.1, 1.0, funcs, p)
-
-# Main.@code_warntype EV′(1.0, 0.4, 0.1, 1.0, funcs, p)
-# Main.@code_warntype V′εyεx(1.0, 0.4, 0.1, 1.0, 0.0, 0.4, funcs, p)
-# Main.@code_warntype V′εx(1.0, 0.4, 0.1, 1.0, 0.0, funcs, p)
-# Main.@code_warntype w′func(1.0, 0.4, 0.1, 1.0, 0.0, 0.4, funcs, p)
-# Main.@code_warntype Rffunc(0.5)
-
-function f(c, EV′, param)
+function iteratepolicy!(newcmat, cmat, param)
     @unpack_LucasParameters param
-    return c^(1-γ)/(1-γ) + β * EV′
-end
-
-
-
-
-
-function optimalpolicy!(hh, funcs, param)
-    @unpack_LucasParameters param
-    @unpack_LucasHouseholds hh
-    V′func = interpolate((agrid, ψgrid), V′mat, Gridded(Linear()))
-    funcs = (funcs..., V′func)
-    for iter in CartesianIndices(Vmat)
-        ia, iψ = iter[1], iter[2]
-        w, ψ = agrid[ia], ψgrid[iψ]
-        obj = x -> f(x[1], EV′(w, ψ, x[1], x[2], funcs, param), param)
-        res = optimize(obj, [cmat[iter], θmat[iter]])
-        cmat[iter], θmat[iter] = Optim.minimizer(res)
-    end
+    # cfunc = partialinterpolate(agrid, cmat, Linear())
+    # Vafunc = (w, iψ) -> max(cfunc(w, iψ), 1e-9)^-γ
+    # Vafunc = (w, iψ) -> cfunc(w, iψ)^-γ
+    Vafunc = partialinterpolate(agrid, cmat.^-γ, Linear())
+    solveθbyw̃!(θ̃mat, Vafunc, param)
+    solvewbyw̃!(wmat, θ̃mat, Vafunc, param)
+    interpolatepolicy!(newcmat, θmat, w̃mat, wmat, θ̃mat, p)
+    return newcmat
 end
 
 end

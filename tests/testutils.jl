@@ -16,4 +16,12 @@ error = Vaapprox - Vareal
 @test all(Vaapprox[end, :] .== (V[end, :] - V[end-1, :]) ./ (agrid[end] - agrid[end-1]))
 
 
+
+@time v1 = sorted_interpolation(agrid, V[:, end], [1.00:0.001:3;])
+itp = extrapolate(interpolate((agrid, ), V[:, end], Gridded(Linear())), Line())
+@time v2 = itp.([1.00:0.001:3;])
+
+@test norm(v2 - v1) < 1e-8
+
+
 end
