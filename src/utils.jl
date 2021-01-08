@@ -1,3 +1,4 @@
+using Base.Threads
 using Interpolations, Parameters
 using NLsolve
 using Expectations
@@ -12,7 +13,7 @@ struct PartialInterpolation{T<:AbstractInterpolation}
 end
 
 
-function partialinterpolate(grid, value, intermethod = Linear(), extramethod = Interpolations.Flat())
+function partialinterpolate(grid, value, intermethod = Linear(), extramethod = Interpolations.Line())
     # vector intentionally copied so different threads access different interpolator
     itpvec = [extrapolate(interpolate((grid,), value[:, i], Gridded(intermethod)), extramethod) for i in 1:size(value)[2]]
     PartialInterpolation(itpvec)
@@ -24,6 +25,22 @@ end
 
 function centraldiff(V, agrid)
     Va = similar(V)
+    dagrid = diff(agrid)
+    na = length(agrid)
+    for i in 1:na
+        i₋ = max(1, i-1) # when i == 1, it becomes forward difference
+        i₊ = min(na, i+1) # when i == na, it becomes backward difference
+        Δa = agrid[i₊] - agrid[i₋]
+        for j in 1:size(V)[2]
+            ΔV = V[i₊, j] - V[i₋, j]
+            Va[i, j] = ΔV / Δa
+        end               
+    end
+    return Va
+end
+
+function centraldiff!(Va, V, agrid)
+    # Va = similar(V)
     dagrid = diff(agrid)
     na = length(agrid)
     for i in 1:na
@@ -104,4 +121,35 @@ function iterate_function(f!, x0; residualnorm = (x -> norm(x,Inf)), ftol = 1e-1
     end
     converged = residual <= ftol
     return IterationResults(xold, converged, iter, residual)
+end
+
+
+function discretizeproces(grid, lom, 𝔼 = expectation(Normal(), Gaussian; n = 1000), minp = 1e-8)
+    n = length(grid)
+    A = zeros(Float64, n, n)
+    if n > 1
+        gridmid = (grid[1:end-1] + grid[2:end]) / 2
+    else
+        gridmid = []
+    end
+    gridmid = [-Inf; gridmid; Inf]
+    for i in 1:n
+        for j in 1:n
+            A[i, j] = 𝔼(ε-> gridmid[j] < lom(grid[i], ε) <= gridmid[j+1])
+        end
+    end
+    A[A.<minp] .= 0
+    A .= A ./ sum(A, dims = 2)
+    return A
+end
+
+
+function 𝔼markov(f, A::Matrix{T}, iz) where{T}
+    𝔼f = zero(T)
+    @inbounds for iz′ in 1:size(A)[2]
+        if A[iz, iz′] > zero(T)
+            𝔼f += A[iz, iz′] * f(iz′)
+        end
+    end
+    return 𝔼f
 end
