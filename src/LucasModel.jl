@@ -1,7 +1,11 @@
 
 module LucasModel
 
+
 include("utils.jl")
+export LucasParameters, LucasHouseholds, solveR!, iteratepolicy!, iterationhelper!
+export @unpack_LucasParameters, @unpack_LucasHouseholds
+
 @with_kw struct LucasParameters
     @deftype Float64
     β = 0.98
@@ -21,6 +25,7 @@ include("utils.jl")
     # 𝔼εx::IterableExpectation{Array{Float64, 1}, Array{Float64, 1}} = expectation(Normal(), Gaussian; n = 10)
     Rfvec::Vector{Float64} = zeros(nψ)
     pdvec::Vector{Float64} = zeros(nψ)
+    𝔼R::Vector{Float64} = zeros(nψ)
     Aψ::Matrix{Float64}  = zeros(nψ, nψ)
 end
 
@@ -47,16 +52,26 @@ end
     # θ̃mat::Matrix{T} # store temporary value
 end
 
-function LucasHouseholds(param, T=Float64; initializeV=true)
+function LucasHouseholds(param, T=Float64; initializeHH=true)
     @unpack_LucasParameters param
     mats =  [Matrix{T}(undef, na, nψ) for i in 1:length(fieldnames(LucasHouseholds))]
     hh = LucasHouseholds(mats...)
-    # if initializeV
-    #     initializeV!(hh, param)
-    # end
+    if initializeHH
+        initializeHH!(hh, param)
+    end
     return hh
 end
 
+function initializeHH!(hh, param)
+    @unpack_LucasParameters param
+    @unpack_LucasHouseholds hh
+    Avec, cwratio = solveAandcwratio(param)
+    # 𝔼R = [𝔼εy(εy->Rfunc(iψ, iψ, Ygrowthεy(εy, param), param)) for iψ in 1:nψ]
+    capitalizedΩ = (1 .- ψgrid) ./ 𝔼R
+    wgrid = agrid .+ capitalizedΩ'
+    cmat .= wgrid .* cwratio'
+    # V′mat = @.  wgrid^(1-γ) / (1-γ) .* Avec'
+end
 
 @inline function ψ′func(ψ, εx, param)
     @unpack_LucasParameters param
@@ -98,13 +113,17 @@ end
 
 
 function solveR!(param)
+    ψ_markov!(param)
     @unpack_LucasParameters param
     rhs =  exp((γ - 1) * g - γ * (γ - 1) / 2 * σY^2)
     pdconst = 1 / (rhs / param.β - 1)
-    res = nlsolve(x -> eulerequation(x, param), pdconst * ones(size(param.ψgrid)), iterations=20, method=:newton, show_trace=true)
+    res = nlsolve(x -> eulerequation(x, param), pdconst * ones(size(param.ψgrid)), iterations=100, method=:newton)
     pdvec .= res.zero
     calculateRf!(param)
+    𝔼R .= [𝔼εy(εy->Rfunc(iψ, iψ, Ygrowthεy(εy, param), param)) for iψ in 1:nψ]
 end
+
+
 
 function calculateRf!(param)
     @unpack_LucasParameters param

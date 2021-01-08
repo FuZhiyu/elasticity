@@ -1,13 +1,13 @@
+using Reexport
+@reexport using NLsolve, Parameters, Expectations, LinearAlgebra, Statistics, Distributions
+@reexport using Interpolations
 using Base.Threads
-using Interpolations, Parameters
-using NLsolve
-using Expectations
 using Statistics, Distributions
 using Optim
 using Roots
 using LinearAlgebra
 using BenchmarkTools
-
+export PartialInterpolation, partialinterpolate
 struct PartialInterpolation{T<:AbstractInterpolation}
     itpvec::Vector{T}
 end

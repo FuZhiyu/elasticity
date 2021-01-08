@@ -24,10 +24,9 @@ using LinearAlgebra, Test
         σY = 0.1,
         𝔼εy = expectation(Normal(), Gaussian; n = 100)
     )
-    ψ_markov!(p)
     solveR!(p)
-
     hh = LucasHouseholds(p)
+
     @unpack_LucasParameters p
     @unpack_LucasHouseholds hh
 
@@ -94,7 +93,7 @@ end
         ψgrid = [0.1:0.1:1.0;], 
         γ = 4,
         σY = 0.1,
-        β = 0.98,
+        β = 0.94,
         σx=.0, ρx = 1.0,
         𝔼εy = expectation(Normal(), Gaussian; n = 50)
     )
