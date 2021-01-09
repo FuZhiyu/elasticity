@@ -9,7 +9,7 @@ export @unpack_LucasParameters, @unpack_LucasHouseholds
 @with_kw struct LucasParameters
     @deftype Float64
     β = 0.98
-    σY = 0.1
+    σy = 0.1
     # σD = 0.15
     g = 0.02
     ρ = 0.02 # discounting
@@ -88,12 +88,12 @@ end
 
 function eulerequation(pdvec, iψ, iψ′, param)
     # @unpack_LucasParameters param
-    @unpack β, γ, σY, ψgrid, g = param
+    @unpack β, γ, σy, ψgrid, g = param
     ψ, ψ′ = ψgrid[iψ], ψgrid[iψ′]
     pd, pd′ = pdvec[iψ], pdvec[iψ′]
     # ψ′ = ψ′func(ψ, εx, param)
     # pd′ = pdfunc(ψ′)
-    return β * ψ′ / ψ * (pd′ + 1) / pd - exp((γ - 1) * g - γ * (γ - 1) / 2 * σY^2)
+    return β * ψ′ / ψ * (pd′ + 1) / pd - exp((γ - 1) * g - γ * (γ - 1) / 2 * σy^2)
 end
 
 
@@ -115,7 +115,7 @@ end
 function solveR!(param)
     ψ_markov!(param)
     @unpack_LucasParameters param
-    rhs =  exp((γ - 1) * g - γ * (γ - 1) / 2 * σY^2)
+    rhs =  exp((γ - 1) * g - γ * (γ - 1) / 2 * σy^2)
     pdconst = 1 / (rhs / param.β - 1)
     res = nlsolve(x -> eulerequation(x, param), pdconst * ones(size(param.ψgrid)), iterations=100, method=:newton)
     pdvec .= res.zero
@@ -134,7 +134,7 @@ function calculateRf!(param)
                 ψ′_ψ += Aψ[iψ,iψ′] * ψgrid[iψ′] / ψgrid[iψ]
             end
         end
-        Rfvec[iψ] = 1 / β * exp(γ * g - γ * (γ + 1) / 2 * σY^2)
+        Rfvec[iψ] = 1 / β * exp(γ * g - γ * (γ + 1) / 2 * σy^2)
     end
     return Rfvec
 end
@@ -143,7 +143,7 @@ end
 # @fastmath function w′func(w, ψ, c, θ, εy, ψ′, funcs, param)
 #     @unpack Rffunc, pdfunc, V′func = funcs
 #     @unpack_LucasParameters param
-#     Ygrowth = exp(g - 1/2 * σY^2 + σY * εy)
+#     Ygrowth = exp(g - 1/2 * σy^2 + σy * εy)
 #     Rf = Rffunc(ψ)
 #     R = (pdfunc(ψ′) + 1) / pdfunc(ψ) * ψ′ / ψ * Ygrowth
 #     R̃ = θ * R + (1-θ) * Rf
@@ -153,7 +153,7 @@ end
 @fastmath function V′εyεx(w′, ψ′, εy, funcs, param)
     @unpack V′func = funcs
     @unpack_LucasParameters param
-    Ygrowth = exp(g - 1 / 2 * σY^2 + εy)
+    Ygrowth = exp(g - 1 / 2 * σy^2 + εy)
     return V′func(w′, ψ′) * Ygrowth.^(1 - γ)
 end
 
@@ -165,8 +165,8 @@ end
 
 # solving foc for θ
 @inline @fastmath function Ygrowthεy(εy, param)
-    @unpack g, σY = param
-    Ygrowth = exp(g - 1 / 2 * σY^2 + σY * εy)
+    @unpack g, σy = param
+    Ygrowth = exp(g - 1 / 2 * σy^2 + σy * εy)
 end
 
 @inline @fastmath function Rfunc(iψ, iψ′, Ygrowth, param)

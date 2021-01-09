@@ -21,7 +21,7 @@ using LinearAlgebra, Test
         γ = 4,
         ψgrid = [1.0;], 
         σx=.0, ρx = 1.0,
-        σY = 0.1,
+        σy = 0.1,
         𝔼εy = expectation(Normal(), Gaussian; n = 100)
     )
     solveR!(p)
@@ -92,7 +92,7 @@ end
         # ψgrid = [0.1:0.1:0.99;], 
         ψgrid = [0.1:0.1:1.0;], 
         γ = 4,
-        σY = 0.1,
+        σy = 0.1,
         β = 0.94,
         σx=.0, ρx = 1.0,
         𝔼εy = expectation(Normal(), Gaussian; n = 50)

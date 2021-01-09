@@ -70,6 +70,30 @@ function sorted_interpolation!(yq, x, y, xq)
     return yq
 end
 
+@fastmath function linear_interp(grid, value, t, left_extrap = false, right_extrap = true)
+    # grid must be sorted! Don't check here for performance.
+    n = length(grid)
+    if n == 1
+        return value[1]
+    end
+    i = searchsortedfirst(grid, t)
+    if i == 1
+        if left_extrap
+            return value[1] + (t-grid[1]) * (value[2] - value[1])/(grid[2] - grid[1])
+        else
+            return value[1]
+        end
+    elseif i> n
+        if right_extrap
+            return value[n] + (t-grid[n]) * (value[n] - value[n-1])/(grid[n] - grid[n-1])
+        else
+            return value[n]
+        end
+    else
+        return value[i-1] + (t-grid[i-1]) * (value[i] - value[i-1])/(grid[i] - grid[i-1])
+    end
+end
+
 @fastmath function interpolate_coord!(xqi, xqpi, x, xq)
     xi = 1
     x_low = x[1]
