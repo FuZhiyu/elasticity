@@ -8,7 +8,7 @@ export @unpack_LucasParameters, @unpack_LucasHouseholds
 
 @with_kw struct LucasParameters
     @deftype Float64
-    β = 0.98
+    β = 0.9
     σy = 0.1
     # σD = 0.15
     g = 0.02
@@ -21,7 +21,7 @@ export @unpack_LucasParameters, @unpack_LucasHouseholds
     ψgrid::Vector{Float64} = [0.01:0.01:0.99;] # D/Y
     na::Int64 = length(agrid)
     nψ::Int64 = length(ψgrid)
-    𝔼εy::IterableExpectation{Array{Float64,1},Array{Float64,1}} = expectation(Normal(), Gaussian; n=10)
+    𝔼εy::IterableExpectation{Array{Float64,1},Array{Float64,1}} = expectation(Normal(), Gaussian; n=20)
     # 𝔼εx::IterableExpectation{Array{Float64, 1}, Array{Float64, 1}} = expectation(Normal(), Gaussian; n = 10)
     Rfvec::Vector{Float64} = zeros(nψ)
     pdvec::Vector{Float64} = zeros(nψ)
