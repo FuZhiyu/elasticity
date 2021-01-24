@@ -1,393 +1,143 @@
 
-module LLRModel
-
+module LRRModel
+using DataFrames
+export LRRParameters, iteratepd!, solve𝔼R!, approximatesolution, simulatemodel
 
 include("utils.jl")
-export LLRParameters, LLRHouseholds, solveR!, iteratepolicy!, iterationhelper!
-export @unpack_LLRParameters, @unpack_LLRHouseholds
-
-@with_kw struct LLRParameters
+@with_kw struct LRRParameters
     @deftype Float64
-    β = 0.9
-    σy = 0.1
-    # σD = 0.15
-    g = 0.02
-    ρ = 0.02 # discounting
-    γ = 5
-    μx = 2 / 3
-    ρx = 0.95
-    σx = 0.03
-    agrid::Vector{Float64} = [exp(x) - 1 for x in 0.05:0.05:5] # wealth. w in the notes.
-    ψgrid::Vector{Float64} = [0.01:0.01:0.99;] # D/Y
-    na::Int64 = length(agrid)
-    nψ::Int64 = length(ψgrid)
-    𝔼εy::IterableExpectation{Array{Float64,1},Array{Float64,1}} = expectation(Normal(), Gaussian; n=20)
+    β = 0.998
+    γ = 10.0
+    φ = 1.5
+    θ = (1-γ)/(1-1/φ)
+    ρ = 0.979
+    φe = 0.044
+    μ = 0.0015
+    σ̄ = 0.0078
+    ν₁ = 1.0
+    σw = 0.0
+    maxx = φe * σ̄/sqrt(1-ρ^2) * 1.96
+    nx::Int64 = 50
+    xgrid::Vector{Float64} = range(-maxx, maxx, length = nx)
+    nσ::Int64 = 50
+    σgrid::Vector{Float64}
+    𝔼η::IterableExpectation{Array{Float64,1},Array{Float64,1}} = expectation(Normal(), Gaussian; n=10)
+    𝔼e::IterableExpectation{Array{Float64,1},Array{Float64,1}} = expectation(Normal(), Gaussian; n=10)
+    𝔼w::IterableExpectation{Array{Float64,1},Array{Float64,1}} = expectation(Normal(), Gaussian; n=10)
+    # 𝔼::Function = f -> 𝔼η(η->𝔼e(e->𝔼w(w->f(η, e, w))))
     # 𝔼εx::IterableExpectation{Array{Float64, 1}, Array{Float64, 1}} = expectation(Normal(), Gaussian; n = 10)
-    Rfvec::Vector{Float64} = zeros(nψ)
-    pdvec::Vector{Float64} = zeros(nψ)
-    𝔼R::Vector{Float64} = zeros(nψ)
-    Aψ::Matrix{Float64}  = zeros(nψ, nψ)
+    Rfmat::Matrix{Float64} = zeros(nx, nσ)
+    pdmat::Matrix{Float64} = @. 1/max(exp(-(1-1/φ) * (μ + xgrid) - 0.5 * (1-γ) * (1-1/φ) * σgrid'^2)/β-1, 1e-4)
+    𝔼Rmat::Matrix{Float64} = zeros(nx, nσ)
 end
 
-function ψ_markov!(param)
-    @unpack_LLRParameters param
-    # Aψ = zeros(nψ, nψ)
-    lom = (ψ, εx) -> ψ′func(ψ, εx, param)
-    𝔼 = expectation(Normal(), Gaussian; n=10000)
-    A = discretizeproces(ψgrid, lom, 𝔼)
-    param.Aψ .= A
+function gfunc(x, σ, η, param)
+    @unpack_LRRParameters param
+    g = μ + x + σ * η
 end
 
-
-@inline function ψ′func(ψ, εx, param)
-    @unpack_LLRParameters param
-    # ρx * x + σx * εx
-    # return exp(-σx^2/2 + σx * εx) * x
-    if ψ == one(ψ)
-        return ψ
-    end
-    x = log(μx * ψ / (1 - ψ))
-    x′ = ρx * x + σx * εx
-    return exp(x′) / (μx + exp(x′))
+function x′func(x, σ, e, param)
+    @unpack_LRRParameters param
+    x′ = ρ * x + φe * σ * e
 end
 
-
-function eulerequation(pdvec, iψ, iψ′, param)
-    # @unpack_LLRParameters param
-    @unpack β, γ, σy, ψgrid, g = param
-    ψ, ψ′ = ψgrid[iψ], ψgrid[iψ′]
-    pd, pd′ = pdvec[iψ], pdvec[iψ′]
-    # ψ′ = ψ′func(ψ, εx, param)
-    # pd′ = pdfunc(ψ′)
-    return β * ψ′ / ψ * (pd′ + 1) / pd - exp((γ - 1) * g - γ * (γ - 1) / 2 * σy^2)
+function σ′func(σ, w, param)
+    @unpack_LRRParameters param
+    σ′² = σ̄^2 + ν₁ * (σ^2 - σ̄^2) + σw * w
+    return sqrt(max(σ′², 0))
 end
 
-
-function eulerequation(pdvec, param)
-    @unpack Aψ, nψ, ψgrid = param
-    # pdfunc = extrapolate(interpolate((ψgrid, ), pd, Gridded(Linear())), Line())
-    res = zeros(size(ψgrid))
-    for (iψ, ψ) in enumerate(ψgrid)
-        for iψ′ in 1:nψ
-            if param.Aψ[iψ,iψ′] > 0
-                res[iψ] += Aψ[iψ,iψ′] * eulerequation(pdvec, iψ, iψ′, param)
-            end
-        end
-    end
-    return res
+function Rfunc(pdfunc, x, σ, η, e, w, param)
+    @unpack_LRRParameters param
+    x′ = x′func(x, σ, e, param)
+    σ′ = σ′func(σ, w, param)
+    pd′ = pdfunc(x′, σ′)
+    pd = pdfunc(x, σ)
+    g = gfunc(x, σ, η, param)
+    return exp(g) * (pd′ + 1)/pd
 end
 
-
-function solveR!(param)
-    ψ_markov!(param)
-    @unpack_LLRParameters param
-    rhs =  exp((γ - 1) * g - γ * (γ - 1) / 2 * σy^2)
-    pdconst = 1 / (rhs / param.β - 1)
-    res = nlsolve(x -> eulerequation(x, param), pdconst * ones(size(param.ψgrid)), iterations=100, method=:newton)
-    pdvec .= res.zero
-    calculateRf!(param)
-    𝔼R .= [𝔼εy(εy->Rfunc(iψ, iψ, Ygrowthεy(εy, param), param)) for iψ in 1:nψ]
+function Mfunc(pdfunc, x, σ, η, e, w, param)
+    @unpack_LRRParameters param
+    g = gfunc(x, σ, η, param)
+    R = Rfunc(pdfunc, x, σ, η, e, w, param)
+    M = β^θ * exp(g)^(-θ/φ) * R^(θ-1)
 end
 
-
-
-function calculateRf!(param)
-    @unpack_LLRParameters param
-    for iψ in 1:nψ
-        ψ′_ψ = 0.0
-        for iψ′ in 1:nψ
-            if param.Aψ[iψ,iψ′] > 0
-                ψ′_ψ += Aψ[iψ,iψ′] * ψgrid[iψ′] / ψgrid[iψ]
-            end
-        end
-        Rfvec[iψ] = 1 / β * exp(γ * g - γ * (γ + 1) / 2 * σy^2)
-    end
-    return Rfvec
+function __pd_inner(pdfunc, x, σ, η, e, w, param)
+    @unpack_LRRParameters param
+    x′ = x′func(x, σ, e, param)
+    σ′ = σ′func(σ, w, param)
+    pd′ = pdfunc(x′, σ′)
+    g = gfunc(x, σ, η, param)
+    return (β * exp(g)^(1-1/φ) * (pd′ + 1))^θ
 end
-
-#====================================================
-#                 Dynamic Programming
-====================================================#
-
+__𝔼w_pd_inner(pdfunc, x, σ, η, e, param) = param.𝔼w(w->__pd_inner(pdfunc, x, σ, η, e, w, param))
+__𝔼ew_pd_inner(pdfunc, x, σ, η, param) = param.𝔼e(e->__𝔼w_pd_inner(pdfunc, x, σ, η, e, param))
+__𝔼_pd_inner(pdfunc, x, σ, param) = param.𝔼η(η->__𝔼ew_pd_inner(pdfunc, x, σ, η, param))
 
 
-@with_kw struct LLRHouseholds{T <: Real}
-    # the first dimension for the matricies is w, and the second is the state variable z
-    Vmat::Matrix{T} # value function
-    # V′mat::Matrix{T} # value function
-    Vamat::Matrix{T} # value function
-    θmat::Matrix{T} # portfolio allocation
-    θ̃mat::Matrix{T} # portfolio allocation by w̃
-    cmat::Matrix{T} # consumption
-    wmat::Matrix{T} # used for endogenous points
-    w̃mat::Matrix{T} # used for endogenous points
-    # θ̃mat::Matrix{T} # store temporary value
-end
-
-function LLRHouseholds(param, T=Float64; initializeHH=true)
-    @unpack_LLRParameters param
-    mats =  [Matrix{T}(undef, na, nψ) for i in 1:length(fieldnames(LLRHouseholds))]
-    hh = LLRHouseholds(mats...)
-    if initializeHH
-        initializeHH!(hh, param)
-    end
-    return hh
-end
-
-function initializeHH!(hh, param)
-    @unpack_LLRParameters param
-    @unpack_LLRHouseholds hh
-    Avec, cwratio = solveAandcwratio(param)
-    # 𝔼R = [𝔼εy(εy->Rfunc(iψ, iψ, Ygrowthεy(εy, param), param)) for iψ in 1:nψ]
-    capitalizedΩ = (1 .- ψgrid) ./ 𝔼R
-    wgrid = agrid .+ capitalizedΩ'
-    cmat .= wgrid .* cwratio'
-    # V′mat = @.  wgrid^(1-γ) / (1-γ) .* Avec'
-end
-
-# @fastmath function w′func(w, ψ, c, θ, εy, ψ′, funcs, param)
-#     @unpack Rffunc, pdfunc, V′func = funcs
-#     @unpack_LLRParameters param
-#     Ygrowth = exp(g - 1/2 * σy^2 + σy * εy)
-#     Rf = Rffunc(ψ)
-#     R = (pdfunc(ψ′) + 1) / pdfunc(ψ) * ψ′ / ψ * Ygrowth
-#     R̃ = θ * R + (1-θ) * Rf
-#     w′ = 1/Ygrowth * (w + 1 - ψ - c) * R̃
-# end
-
-@fastmath function V′εyεx(w′, ψ′, εy, funcs, param)
-    @unpack V′func = funcs
-    @unpack_LLRParameters param
-    Ygrowth = exp(g - 1 / 2 * σy^2 + εy)
-    return V′func(w′, ψ′) * Ygrowth.^(1 - γ)
-end
-
-function V′εyεx(w, ψ, c, θ, εy, ψ′, funcs, param)
-    w′ = w′func(w, ψ, c, θ, εy, ψ′, funcs, param)
-    @unpack_LLRParameters param
-    V′εyεx(w′, ψ′, εy, funcs, param)
-end
-
-# solving foc for θ
-@inline @fastmath function Ygrowthεy(εy, param)
-    @unpack g, σy = param
-    Ygrowth = exp(g - 1 / 2 * σy^2 + σy * εy)
-end
-
-@inline @fastmath function Rfunc(iψ, iψ′, Ygrowth, param)
-    @unpack pdvec, ψgrid = param
-    ψ, ψ′ = ψgrid[iψ], ψgrid[iψ′]
-    R = (pdvec[iψ′] + 1) / pdvec[iψ] * ψ′ / ψ * Ygrowth
-end
-
-@inline @fastmath function θfocεyεx(θ, w̃, iψ, εy, iψ′, funcs, param)
-    @unpack_LLRParameters param
-    @unpack Vafunc = funcs
-    Ygrowth = Ygrowthεy(εy, param)
-    R = Rfunc(iψ, iψ′, Ygrowth, param)
-    Rf = Rfvec[iψ]
-    w′ = w̃ * (θ * R + (1 - θ) * Rf) / Ygrowth
-    Va = Vafunc(w′, iψ′)
-    return Va * Ygrowth^-γ  *  (R - Rf) * w̃^γ
-end
-
-@inline function θfocεx(θ, w̃, iψ, iψ′, funcs, param)
-    return param.𝔼εy(εy -> θfocεyεx(θ, w̃, iψ, εy, iψ′, funcs, param))
-end
-
-function θfoc(θ, w̃, iψ, funcs, param)
-    𝔼markov(iψ′ -> θfocεx(θ, w̃, iψ, iψ′, funcs, param), param.Aψ, iψ)
-end
-
-function cfocrhs(θ, w̃, iψ, εy, iψ′, funcs, param)
-    @unpack Vafunc = funcs
-    @unpack_LLRParameters param
-    Ygrowth = Ygrowthεy(εy, param)
-    R = Rfunc(iψ, iψ′, Ygrowth, param)
-    Rf = Rfvec[iψ]
-    w′ = w̃ * (θ * R + (1 - θ) * Rf) / Ygrowth
-    Va = Vafunc(w′, iψ′)
-    return β * Va * Ygrowth^-γ  *  R
-end
-
-function 𝔼cfocrhs(θ, w̃, iψ, funcs, param)
-    𝔼rhs = 𝔼markov(iψ′ -> 
-        param.𝔼εy(εy -> (cfocrhs(θ, w̃, iψ, εy, iψ′, funcs, param))), 
-        param.Aψ, iψ)
-    return 𝔼rhs
-end
-
-function solvewbyw̃!(wmat, θ̃mat, Vafunc, param)
-    @unpack_LLRParameters param
-    # Vafunc = partialinterpolate(agrid, Vamat, Linear())    
-    for iter in CartesianIndices(θ̃mat)
-        ia, iψ = iter[1], iter[2]
-        w̃, ψ = agrid[ia], ψgrid[iψ]
-        θ̃ = θ̃mat[iter]
-        𝔼rhs = 𝔼cfocrhs(θ̃, w̃, iψ, (Vafunc = Vafunc,), param)
-        c = 𝔼rhs^(-1 / γ)
-        w = w̃ + c + ψ - 1
-        wmat[iter] = w
-    end
-    return wmat
-end
-
-# solving maximization for θ
-@fastmath function θobjεyεx(θ, w̃, iψ, εy, iψ′, funcs, param)
-    @unpack_LLRParameters param
-    ψ, ψ′ = ψgrid[iψ], ψgrid[iψ′]
-    @unpack V′func = funcs
-    Ygrowth = Ygrowthεy(εy, param)
-    R = (pdvec[iψ′] + 1) / pdvec[iψ] * ψ′ / ψ * Ygrowth
-    Rf = Rfvec[iψ]
-    w′ = w̃ * (θ * R + (1 - θ) * Rf) / Ygrowth
-    V′ = V′func(w′, iψ′)
-    return V′ * Ygrowth^(1 - γ)
-end
-
-function θobjεx(θ, w̃, iψ, iψ′, funcs, param)
-    return param.𝔼εy(εy -> θobjεyεx(θ, w̃, iψ, εy, iψ′, funcs, param))
-end
-
-function θobj(θ, w̃, iψ, funcs, param)
-    res = zero(θ)
-    @unpack Aψ = param
-    for iψ′ in 1:nψ
-        if param.Aψ[iψ,iψ′] > 0
-            res += Aψ[iψ,iψ′] * θobjεx(θ, w̃, iψ, iψ′, funcs, param)
-        end
-    end
-    return res
-end
-
-function V′εyψ′(θ, w̃, iψ, εy, iψ′, funcs, param)
-    @unpack V′func = funcs
-    @unpack_LLRParameters param
-    Ygrowth = Ygrowthεy(εy, param)
-    R = Rfunc(iψ, iψ′, Ygrowth, param)
-    Rf = Rfvec[iψ]
-    w′ = w̃ * (θ * R + (1 - θ) * Rf) / Ygrowth
-    return V′func(w′, iψ′)
-end
-
-function 𝔼V′func(θ, w̃, iψ, funcs, param)
-    𝔼V′ = 𝔼markov(iψ′ -> 
-            𝔼εy(εy -> V′εyψ′(θ, w̃, iψ, εy, iψ′, funcs, param)), 
-            param.Aψ, iψ)
-    return 𝔼V′
-end
-
-function interpolatepolicy!(cmat, θmat, w̃mat, wmat, θ̃mat, param)
-    @unpack_LLRParameters param
-    θ̃func = partialinterpolate(agrid, θ̃mat)
-    for iψ in 1:nψ
-        ψ = ψgrid[iψ]
-        w_w̃ = @view wmat[:, iψ] # this gives a mapping from w̃grid -> w
-        c_w = @view cmat[:, iψ]
-        θ_w = @view θmat[:, iψ]
-        @assert issorted(w_w̃)
-        # if this mapping is monotone, we could take the inverse of this mapping:
-        w̃_w = @view w̃mat[:, iψ] # relabel for notational clarity
-        ŵgrid, w̃_ŵ = w_w̃, agrid # relabel it for notational clarity. The mapping ŵgrid, w̃_ŵ gives the policy function
-        sorted_interpolation!(w̃_w, ŵgrid, w̃_ŵ, agrid) 
-        θ_w .= θ̃func.(w̃_w, iψ)
-        @. c_w =  agrid + 1 - ψ - w̃_w
+function iteratepd!(newpdmat, pd′mat, param)
+    @unpack_LRRParameters param
+    # 𝔼 = f -> 𝔼η(η->𝔼e(e->𝔼w(w->f(η, e, w))))
+    pd′func = extrapolate(interpolate((xgrid, σgrid), pd′mat, Gridded(Linear())), Interpolations.Line())
+    @threads for iter in CartesianIndices(pdmat)
+       ix, iσ = iter[1] , iter[2]
+       x, σ = xgrid[ix], σgrid[iσ]
+    #    newpdmat[iter] = 𝔼((η, e, w)->__pd_inner(pd′func, x, σ, η, e, w, param))^(1/θ)
+       newpdmat[iter] = __𝔼_pd_inner(pd′func, x, σ, param)^(1/θ)
     end
 end
 
-function solveθbyw̃!(θ̃mat, Vafunc, param)
-    @unpack_LLRParameters param
-    # Vafunc = partialinterpolate(agrid, Vamat, Linear())
-    @threads for iter in CartesianIndices(θ̃mat)
-        ia, iψ = iter[1], iter[2]
-        w̃ = agrid[ia]
-        # θ̃mat[iter] = find_zero(x -> θfoc(x, w̃, iψ, (Vafunc = Vafunc,), param), (0.1, 3.0), Roots.A42(), tol=1e-5)
-        θ̃mat[iter] = find_zero(x -> θfoc(x, w̃, iψ, (Vafunc = Vafunc,), param), 1.0, tol=1e-5)
+function solve𝔼R!(param)
+    @unpack_LRRParameters param
+    pdfunc = extrapolate(interpolate((xgrid, σgrid), pdmat, Gridded(Linear())), Interpolations.Line())
+    𝔼 = f -> 𝔼η(η->𝔼e(e->𝔼w(w->f(η, e, w))))
+    for iter in CartesianIndices(pdmat)
+       ix, iσ = iter[1] , iter[2]
+       x, σ = xgrid[ix], σgrid[iσ]
+       𝔼Rmat[iter] = 𝔼((η, e, w)->Rfunc(pdfunc, x, σ, η, e, w, param))
+       Rfmat[iter] = 1/𝔼((η, e, w)->Mfunc(pdfunc, x, σ, η, e, w, param))
     end
-    θ̃mat
 end
 
-function iteratepolicy!(hh, c0::Matrix{T}, param) where {T}
-    @unpack_LLRParameters param
-    @unpack_LLRHouseholds hh
-    cfunc = partialinterpolate(agrid, c0, Linear(), Line())
-    # Vafunc = (w, iψ) -> max(cfunc(w, iψ), 1e-9)^-γ
-    Vafunc = (w, iψ) -> cfunc(w, iψ)^-γ
-    # Vamat .= c0.^-γ
-    # Vafunc = partialinterpolate(agrid, Vamat, Linear(), Line())
-    iteratepolicy!(hh, Vafunc, param)
-    return cmat
+function approximatesolution(param, κ = 0.997)
+    @unpack_LRRParameters param
+    A1 = (1-1/φ)/(1-κ * ρ)
+    B = κ * A1 * φe
+    σa2 = (1 + B^2) * σ̄^2
+    λmη = -γ
+    λme = (1-θ) * B
+    re = -λmη * σ̄^2 + λme * B * σ̄^2 - 0.5 * σa2
+    rf = -log(β) + 1/φ * μ + (1-θ)/θ * re - 1/2/θ * ((λmη^2 + λme^2) * σ̄^2)
+    return A1, re, rf
 end
 
-function iteratepolicy!(hh, Vafunc, param)
-    @unpack_LLRHouseholds hh
-    solveθbyw̃!(θ̃mat, Vafunc, param)
-    solvewbyw̃!(wmat, θ̃mat, Vafunc, param)
-    interpolatepolicy!(cmat, θmat, w̃mat, wmat, θ̃mat, param)
-end
-
-function iteratepolicyfromV!(hh, V0, param)
-    @unpack_LLRHouseholds hh
-    @unpack_LLRParameters param
-    centraldiff!(Vamat, V0, agrid)
-    Vafunc = partialinterpolate(agrid, Vamat, Linear())
-    iteratepolicy!(hh, Vafunc, param)
-end
-
-function iterationhelper!(out, x, hh, param)
-    iteratepolicy!(hh, x, param)
-    out .= hh.cmat
-end
-
-function calculateV!(Vmat, V0, cmat, w̃mat, θmat, param)
-    @unpack_LLRHouseholds hh
-    @unpack_LLRParameters param
-    V′func = partialinterpolate(agrid, V0, Linear())
-    for iter in CartesianIndices(Vmat)
-        iψ = iter[2]
-        θ = θmat[iter]
-        w̃ = w̃mat[iter]
-        c = cmat[iter]
-        𝔼V′ = 𝔼V′func(θ, w̃, iψ, (V′func = V′func,), param)
-        Vmat[iter] = c^(1 - γ) / (1 - γ) + β * 𝔼V′
+function simulatemodel(param, T = 100000)
+    @unpack_LRRParameters param
+    η, e, w = rand(Normal(0, 1), T), rand(Normal(0, 1), T), rand(Normal(0, 1), T)
+    xvec, σvec = zeros(T), zeros(T)
+    σvec[1] = σ̄
+    for i in 2:T
+        σvec[i] = σ′func(σvec[i-1], w[i], param)
+        xvec[i] = x′func(xvec[i-1], σvec[i], e[i], param)
     end
-    return Vmat
-end
+    dt = DataFrame(t = 1:T, x = xvec, σ = σvec)
+    
+    Re = (𝔼Rmat - Rfmat)
+    Rf = Rfmat
+    
+    Rffunc = extrapolate(interpolate((xgrid, σgrid), Rf, Gridded(Linear())), Interpolations.Line())
+    refunc = extrapolate(interpolate((xgrid, σgrid), log.(𝔼Rmat./Rf), Gridded(Linear())), Interpolations.Line())
+    Refunc = extrapolate(interpolate((xgrid, σgrid), Re, Gridded(Linear())), Interpolations.Line())
+    pdfunc = extrapolate(interpolate((xgrid, σgrid), pdmat, Gridded(Linear())), Interpolations.Line())
 
-function iteratevalue!(hh, V0, param; additionaliterations=0)
-    @unpack_LLRParameters param
-    @unpack_LLRHouseholds hh
-    iteratepolicyfromV!(hh, V0, param)
-    calculateV!(Vmat, V0, cmat, w̃mat, θmat, param)
-    for counter in 1:additionaliterations
-        V0 .= Vmat
-        calculateV!(Vmat, V0, cmat, w̃, θmat, param)
-    end
-    return Vmat      
-end
+    dt.Rf = Rffunc.(dt.x, dt.σ)
+    dt.Re = Refunc.(dt.x, dt.σ)
+    dt.re = refunc.(dt.x, dt.σ)
+    dt.pd = pdfunc.(dt.x, dt.σ)
 
-
-# helper functions for analytical solution
-function guesscwratio(cwratio, ERgamma, param)
-    @unpack_LLRParameters param
-    M = cwratio / (1 - cwratio) 
-    A = M^-γ / (β * ERgamma)
-    A - (M^(1 - γ) + M^-γ) * (1 / (1 + M))^(1 - γ)
-end
-
-function solveAandcwratio(param)
-    @unpack_LLRParameters param
-    cwratio = zeros(size(ψgrid))
-    A = zeros(size(ψgrid))
-    for iψ in 1:nψ
-        ERgamma = 𝔼markov(iψ′ -> 
-        𝔼εy(εy -> Rfunc(iψ, iψ′, Ygrowthεy(εy, param), param)^(1 - γ)),
-            Aψ, iψ)
-        cwratio[iψ] = find_zero(x -> guesscwratio(x, ERgamma, param), (1e-8, 1-1e-8), Roots.A42())
-        M = cwratio[iψ] / (1 - cwratio[iψ]) 
-        A[iψ] = M^-γ / (β * ERgamma)
-    end
-    return A, cwratio
+    return dt
 end
 
 
