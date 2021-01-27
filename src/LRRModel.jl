@@ -2,6 +2,7 @@
 module LRRModel
 using DataFrames
 export LRRParameters, iteratepd!, solve𝔼R!, approximatesolution, simulatemodel
+export @unpack_LRRParameters
 
 include("utils.jl")
 @with_kw struct LRRParameters
@@ -12,15 +13,20 @@ include("utils.jl")
     θ = (1-γ)/(1-1/φ)
     ρ = 0.979
     φe = 0.044
+    φd = 4.5
+    ψd = 3
     μ = 0.0015
     σ̄ = 0.0078
-    ν₁ = 1.0
-    σw = 0.0
+    ν₁ = .987
+    σw = 0.23e-5
+
     maxx = φe * σ̄/sqrt(1-ρ^2) * 1.96
     nx::Int64 = 50
     xgrid::Vector{Float64} = range(-maxx, maxx, length = nx)
     nσ::Int64 = 50
-    σgrid::Vector{Float64}
+    σmax = sqrt(σw /sqrt(1-ν₁^2) * 1.96 + σ̄^2)
+    σmin = sqrt(max(σ̄^2 - σw /sqrt(1-ν₁^2) * 1.96, 0.00005))
+    σgrid::Vector{Float64} = range(σmin, σmax, length = nσ)
     𝔼η::IterableExpectation{Array{Float64,1},Array{Float64,1}} = expectation(Normal(), Gaussian; n=10)
     𝔼e::IterableExpectation{Array{Float64,1},Array{Float64,1}} = expectation(Normal(), Gaussian; n=10)
     𝔼w::IterableExpectation{Array{Float64,1},Array{Float64,1}} = expectation(Normal(), Gaussian; n=10)
@@ -56,6 +62,22 @@ function Rfunc(pdfunc, x, σ, η, e, w, param)
     g = gfunc(x, σ, η, param)
     return exp(g) * (pd′ + 1)/pd
 end
+
+function gdfunc(x, σ, η, param)
+    @unpack_LRRParameters param
+    gd = μ + ψd * x + σ * η
+end
+
+function Rdfunc(pdfunc, x, σ, η, e, w, param)
+    @unpack_LRRParameters param
+    x′ = x′func(x, σ, e, param)
+    σ′ = σ′func(σ, w, param)
+    pd′ = pdfunc(x′, σ′)
+    pd = pdfunc(x, σ)
+    gd = gdfunc(x, σ, η, param)
+    return exp(g) * (pd′ + 1)/pd
+end
+
 
 function Mfunc(pdfunc, x, σ, η, e, w, param)
     @unpack_LRRParameters param
@@ -101,16 +123,25 @@ function solve𝔼R!(param)
     end
 end
 
-function approximatesolution(param, κ = 0.997)
+function approximatesolution(param, κ = 0.997, κm = 0.9966)
     @unpack_LRRParameters param
     A1 = (1-1/φ)/(1-κ * ρ)
+    A1m = (ψd - 1/φ)/(1-κm * ρ)
+    A2 = 0.5 * ((θ - θ/φ)^2 + (θ * A1 * κ * φe)^2)/θ/(1-κ * ν₁)
     B = κ * A1 * φe
-    σa2 = (1 + B^2) * σ̄^2
+    σa2 = (1 + B^2) * σ̄^2 + (A2 * κ * σw)^2
     λmη = -γ
     λme = (1-θ) * B
-    re = -λmη * σ̄^2 + λme * B * σ̄^2 - 0.5 * σa2
-    rf = -log(β) + 1/φ * μ + (1-θ)/θ * re - 1/2/θ * ((λmη^2 + λme^2) * σ̄^2)
-    return A1, re, rf
+    λmw = (1-θ) * A2 * κ
+    βme = κm * A1m * φe
+    Hm = (λmη^2 + (-λme + βme)^2 + φd^2)
+    A2m = ((1-θ) * A2 * (1-κ * ν₁) + 0.5 * Hm) / (1-κm * ν₁)
+    βmw = κ * A2m
+    varrm2 = (βme^2 + φd^2) * σ̄^2 + βmw^2 * σw^2
+    rem = βme * λme * σ̄^2 + βmw * λmw * σw^2 - 0.5 * varrm2
+    re = -λmη * σ̄^2 + λme * B * σ̄^2 + κ * A2 * λmw * σw^2 - 0.5 * σa2
+    rf = -log(β) + 1/φ * μ + (1-θ)/θ * re - 1/2/θ * ((λmη^2 + λme^2) * σ̄^2 + λmw^2 * σw^2)
+    return A1, A2, re, rem, rf
 end
 
 function simulatemodel(param, T = 100000)
